@@ -11,6 +11,7 @@ transformer_params = {
     'd_model': 64,
     'num_heads': 8,
     'd_ff': 256,
+    'd_state': 16,
     'input_dim': 64,
     'output_dim': Y_train.shape[1]
 }

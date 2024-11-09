@@ -63,23 +63,86 @@ class LayerNormalization:
         x_norm = (x - mean) / np.sqrt(variance + self.eps)
         return self.gamma * x_norm + self.beta
 
-class TransformerEncoderLayer:
-    def __init__(self, d_model, num_heads, d_ff):
+class StateSpaceBlock:
+    def __init__(self, d_model, d_state, dt_min=0.001, dt_max=0.1):
+        self.d_model = d_model
+        self.d_state = d_state
+        
+        # State space parameters
+        self.A = np.random.randn(d_state, d_state) * 0.1
+        self.B = np.random.randn(d_state, d_model) * 0.1
+        self.C = np.random.randn(d_model, d_state) * 0.1
+        self.D = np.eye(d_model)
+        
+        # Selective scan parameters
+        self.dt_min = dt_min
+        self.dt_max = dt_max
+        self.delta_W = np.random.randn(d_model, d_model) * 0.1
+        self.delta_b = np.zeros(d_model)
+    
+    def get_delta(self, x):
+        # Compute dynamic timesteps
+        delta = np.tanh(x.dot(self.delta_W) + self.delta_b)
+        return self.dt_min + (self.dt_max - self.dt_min) * delta
+    
+    def selective_scan(self, x, h0=None):
+        batch_size, seq_len, _ = x.shape
+        if h0 is None:
+            h0 = np.zeros((batch_size, self.d_state))
+        
+        h = h0
+        outputs = []
+        
+        for t in range(seq_len):
+            # Compute dynamic timestep
+            dt = self.get_delta(x[:, t])
+            
+            # Discretize continuous state space equation
+            A_dt = np.eye(self.d_state) + dt[:, None, None] * self.A
+            B_dt = dt[:, None, None] * self.B
+            
+            # Update state
+            h = h.dot(A_dt) + x[:, t].dot(B_dt)
+            
+            # Compute output
+            y = h.dot(self.C.T) + x[:, t].dot(self.D)
+            outputs.append(y)
+        
+        return np.stack(outputs, axis=1)
+    
+    def forward(self, x):
+        return self.selective_scan(x)
+
+class HybridTransformerLayer:
+    def __init__(self, d_model, num_heads, d_ff, d_state):
         self.mha = MultiHeadAttention(d_model, num_heads)
+        self.ssm = StateSpaceBlock(d_model, d_state)
         self.ffn = PositionwiseFeedForward(d_model, d_ff)
         self.layernorm1 = LayerNormalization(d_model)
         self.layernorm2 = LayerNormalization(d_model)
-    
+        self.layernorm3 = LayerNormalization(d_model)
+        
     def forward(self, x):
+        # Multi-head attention path
         attn_output = self.mha.forward(x, x, x)
         out1 = self.layernorm1.forward(x + attn_output)
-        ffn_output = self.ffn.forward(out1)
-        out2 = self.layernorm2.forward(out1 + ffn_output)
-        return out2
+        
+        # State space path
+        ssm_output = self.ssm.forward(out1)
+        out2 = self.layernorm2.forward(out1 + ssm_output)
+        
+        # Feed-forward path
+        ffn_output = self.ffn.forward(out2)
+        out3 = self.layernorm3.forward(out2 + ffn_output)
+        
+        return out3
 
-class Transformer:
-    def __init__(self, num_layers, d_model, num_heads, d_ff, input_dim, output_dim):
-        self.layers = [TransformerEncoderLayer(d_model, num_heads, d_ff) for _ in range(num_layers)]
+class HybridTransformer:
+    def __init__(self, num_layers, d_model, num_heads, d_ff, d_state, input_dim, output_dim):
+        self.layers = [
+            HybridTransformerLayer(d_model, num_heads, d_ff, d_state) 
+            for _ in range(num_layers)
+        ]
         self.linear = np.random.randn(d_model, output_dim) * np.sqrt(2. / d_model)
     
     def forward(self, x):
